@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments and secrets
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Local pipeline outputs
+*.db
+*.sqlite
+*.sqlite3
+*.parquet
+config/data_manifest.json
+config/trial_ledger.db
+results/
+outputs/
+
+# Downloaded market data is intentionally not committed.
+# It may be large and its redistribution/license must be checked separately.
+data/raw/*.csv
+data/raw/*.zip
+data/raw/**/*.csv
+data/raw/**/*.zip
+data/raw/dukascopy/
+!data/raw/README.md
+.dukascopy-cache/
+
+# Notebook/runtime noise
+.ipynb_checkpoints/
+*.log

@@ -1,0 +1,13 @@
+{
+  "symbol": "EURUSD",
+  "frequency": "15min",
+  "calendar": "fx_24_5",
+  "timezone": "UTC",
+  "source_dataset": "Hugo Lemonnier / 15m Tick data EURUSD",
+  "source_url": "https://www.kaggle.com/datasets/hugolemonnier/eur-15min",
+  "upstream_claim": "Tick Data Suite export, BID-side OHLC plus tick volume",
+  "license_note": "Kaggle page does not declare a clear license; keep provenance and verify permission before public/commercial use.",
+  "start": "2018-01-01 23:00:00+00:00",
+  "end": "2024-02-09 22:45:00+00:00",
+  "rows": 152381
+}
