@@ -23,7 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import annualization_factor_from_frequency, load_config, set_global_seed
 from src.data.ingest import compute_returns
-from src.data.pit_splits import combinatorial_purged_cv
+from src.data.pit_splits import purged_kfold_cv
 from src.features.fractional_diff import build_fold_feature_sets
 from src.models.baselines import (
     buy_and_hold,
@@ -67,7 +67,7 @@ def run(seeds: int, include_stage2: bool, fixed_d: float | None = None) -> None:
         prices = df["close"]
         returns = compute_returns(prices, method="log")
         target = returns.shift(-1).dropna()
-        folds = combinatorial_purged_cv(
+        folds = purged_kfold_cv(
             len(target),
             n_folds=cfg.splits.n_folds,
             purge_window=cfg.splits.purge_window,

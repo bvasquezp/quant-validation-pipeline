@@ -1,5 +1,5 @@
 """
-Tests para purging/embargo y CPCV folds.
+Tests para purging/embargo y folds temporales.
 
 El invariante critico: no debe haber overlap entre train y
 test/purge/embargo en ningun fold.
@@ -12,7 +12,7 @@ import pytest
 
 from src.data.pit_splits import (
     CVFold,
-    combinatorial_purged_cv,
+    purged_kfold_cv,
     purged_train_test_split,
     verify_no_overlap,
 )
@@ -69,26 +69,26 @@ class TestPurgedTrainTestSplit:
         assert len(train_idx) <= 100 - 20 - 20 - 10
 
 
-class TestCPCV:
-    """Tests para Combinatorial Purged Cross-Validation."""
+class TestPurgedKFold:
+    """Tests para purged/embargoed temporal k-fold."""
 
-    def test_basic_cpcv(self):
-        """Verifica que CPCV genera el numero correcto de folds."""
-        folds = combinatorial_purged_cv(
+    def test_basic_purged_kfold(self):
+        """Verifica el numero configurado de folds temporales."""
+        folds = purged_kfold_cv(
             n_samples=1000, n_folds=5, purge_window=10, embargo_window=5,
         )
         assert len(folds) == 5
 
     def test_no_overlap_any_fold(self):
         """INVARIANTE CRITICO: no hay overlap en ningun fold."""
-        folds = combinatorial_purged_cv(
+        folds = purged_kfold_cv(
             n_samples=1000, n_folds=5, purge_window=10, embargo_window=5,
         )
         assert verify_no_overlap(folds) is True
 
     def test_no_overlap_extreme_windows(self):
         """Incluso con ventanas grandes, no hay overlap."""
-        folds = combinatorial_purged_cv(
+        folds = purged_kfold_cv(
             n_samples=5000, n_folds=5, purge_window=50, embargo_window=30,
         )
         assert verify_no_overlap(folds) is True
@@ -96,7 +96,7 @@ class TestCPCV:
     def test_all_samples_accounted(self):
         """Cada indice del dataset debe aparecer en train o test de algun fold."""
         n = 500
-        folds = combinatorial_purged_cv(
+        folds = purged_kfold_cv(
             n_samples=n, n_folds=5, purge_window=5, embargo_window=3,
         )
         # Todos los indices deben aparecer como test en exactamente un fold
@@ -105,7 +105,7 @@ class TestCPCV:
 
     def test_train_sizes_reasonable(self):
         """El tamaño de train debe ser menor que n_samples pero razonable."""
-        folds = combinatorial_purged_cv(
+        folds = purged_kfold_cv(
             n_samples=1000, n_folds=5, purge_window=10, embargo_window=5,
         )
         for fold in folds:
@@ -117,12 +117,12 @@ class TestCPCV:
     def test_insufficient_samples_raises(self):
         """Debe lanzar error si no hay suficientes muestras."""
         with pytest.raises(ValueError, match="Not enough samples"):
-            combinatorial_purged_cv(
+            purged_kfold_cv(
                 n_samples=20, n_folds=5, purge_window=10, embargo_window=5,
             )
 
     def test_fold_ids_sequential(self):
         """Los IDs de fold deben ser secuenciales."""
-        folds = combinatorial_purged_cv(n_samples=1000, n_folds=5)
+        folds = purged_kfold_cv(n_samples=1000, n_folds=5)
         for i, fold in enumerate(folds):
             assert fold.fold_id == i

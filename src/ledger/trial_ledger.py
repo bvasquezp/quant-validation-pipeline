@@ -38,7 +38,7 @@ class TrialRecord:
     config_hash: str = ""            # hash de hiperparametros -> detecta duplicados
     hyperparams: str = ""            # JSON serializado de los hiperparametros
     sharpe_is: float = 0.0           # Sharpe in-sample
-    sharpe_oos: float = 0.0          # Sharpe out-of-sample (CPCV)
+    sharpe_oos: float = 0.0          # Sharpe out-of-sample (purged k-fold)
     returns_path: str = ""           # ruta al archivo de retornos OOS
     n_observations: int = 0          # T de este trial
     d_used: Optional[float] = None    # orden FFD usado en las features

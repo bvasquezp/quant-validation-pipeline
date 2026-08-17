@@ -14,9 +14,11 @@ import pytest
 from src.features.fractional_diff import (
     _ffd_weights,
     adf_test,
+    build_fold_feature_sets,
     fractional_diff,
     find_optimal_d,
 )
+from src.data.pit_splits import CVFold
 
 
 class TestFFDWeights:
@@ -135,3 +137,28 @@ class TestFindOptimalD:
             f"FFD with d={result['optimal_d']} did not pass ADF: "
             f"p={adf['pvalue']:.4f}"
         )
+
+
+def test_first_fold_never_selects_d_from_future_train():
+    dates = pd.date_range("2024-01-01", periods=120, freq="15min", tz="UTC")
+    prices = pd.Series(
+        100.0 + np.cumsum(np.random.default_rng(7).normal(size=len(dates))),
+        index=dates,
+        name="close",
+    )
+    df = pd.DataFrame({"close": prices})
+    target = prices.pct_change().dropna()
+    fold = CVFold(
+        fold_id=0,
+        train_indices=np.arange(20, len(target)),
+        test_indices=np.arange(0, 20),
+        purge_indices=np.array([], dtype=int),
+        embargo_indices=np.array([], dtype=int),
+    )
+
+    item = build_fold_feature_sets(df, target, [fold])[0]
+
+    assert item.d_used is None
+    assert item.d_selection_method == "not_evaluable_no_pre_test_history"
+    assert item.train_features.empty
+    assert item.test_features.empty

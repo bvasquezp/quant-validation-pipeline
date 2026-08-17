@@ -41,7 +41,7 @@ def _sharpe_ratio(returns: np.ndarray, annualization: float = 1.0) -> float:
 def _ledger_context(metadata: Optional[Dict[str, Any]], annualization: float) -> Dict[str, Any]:
     metadata = metadata or {}
     d_values = metadata.get("d_used_by_fold", [])
-    unique_d = {float(d) for d in d_values}
+    unique_d = {float(d) for d in d_values if d is not None and np.isfinite(d)}
     return {
         "d_used": next(iter(unique_d)) if len(unique_d) == 1 else None,
         "d_selection_method": metadata.get("d_selection_method", "") if d_values else "",
@@ -189,7 +189,7 @@ def tcn_supervised(
     fold_feature_sets: Optional[List[FoldFeatureSet]] = None,
     ledger_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """TCN supervisado con CPCV en PyTorch."""
+    """TCN supervisado con purged temporal k-fold en PyTorch."""
     feature_values = features.values
     target_values = target.values
 
@@ -290,7 +290,7 @@ def tcn_attention_supervised(
     fold_feature_sets: Optional[List[FoldFeatureSet]] = None,
     ledger_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """TCN + Attention supervisado con CPCV en PyTorch."""
+    """TCN + Attention supervisado con purged temporal k-fold en PyTorch."""
     feature_values = features.values
     target_values = target.values
 

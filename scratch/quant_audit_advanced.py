@@ -21,7 +21,7 @@ sys.path.insert(0, str(project_root))
 
 from src.config import load_config
 from src.data.ingest import compute_returns
-from src.data.pit_splits import combinatorial_purged_cv
+from src.data.pit_splits import purged_kfold_cv
 from src.features.fractional_diff import build_feature_matrix
 from src.models.baselines import lightgbm_classifier, sma_crossover
 from src.models.deep_model import tcn_attention_ppo, tcn_supervised
@@ -67,7 +67,7 @@ def audit_lightgbm_folds():
     features = features.loc[valid_mask]
     target = target.loc[valid_mask]
 
-    folds = combinatorial_purged_cv(
+    folds = purged_kfold_cv(
         n_samples=len(features),
         n_folds=5,
         purge_window=10,
@@ -103,7 +103,7 @@ def audit_pytorch_stage2_distinctness():
     features = features.loc[valid_mask]
     target = target.loc[valid_mask]
 
-    folds = combinatorial_purged_cv(n_samples=len(features), n_folds=5)
+    folds = purged_kfold_cv(n_samples=len(features), n_folds=5)
 
     res_tcn = tcn_supervised(features, target, folds, ledger_path=None)
     res_att = tcn_attention_ppo(features, target, folds, ledger_path=None)

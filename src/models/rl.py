@@ -95,16 +95,18 @@ class CausalTCNActorCritic(nn.Module):
     def __init__(self, n_features: int, hidden: int = 64) -> None:
         super().__init__()
         self.encoder = nn.Sequential(
-            nn.Conv1d(n_features, hidden, kernel_size=3, padding=2, dilation=1),
+            nn.ConstantPad1d((2, 0), 0.0),
+            nn.Conv1d(n_features, hidden, kernel_size=3, padding=0, dilation=1),
             nn.Tanh(),
-            nn.Conv1d(hidden, hidden, kernel_size=3, padding=4, dilation=2),
+            nn.ConstantPad1d((4, 0), 0.0),
+            nn.Conv1d(hidden, hidden, kernel_size=3, padding=0, dilation=2),
             nn.Tanh(),
         )
         self.actor = nn.Linear(hidden, 3)
         self.critic = nn.Linear(hidden, 1)
 
     def forward(self, observation: torch.Tensor):
-        encoded = self.encoder(observation.transpose(1, 2))[:, :, :-4]
+        encoded = self.encoder(observation.transpose(1, 2))
         latent = encoded[:, :, -1]
         return self.actor(latent), self.critic(latent).squeeze(-1)
 

@@ -1,7 +1,7 @@
 # Quant Validation Pipeline
 
 Pipeline de investigación para validar estrategias cuantitativas con datos
-point-in-time, CPCV purged/embargoed, diferenciación fraccional, DSR/PSR,
+point-in-time, purged/embargoed temporal k-fold, diferenciación fraccional, DSR/PSR,
 bootstrap selection-aware, modelos baseline, deep learning y PPO.
 
 > Estado: investigación/paper trading. No envía órdenes por defecto y no es
@@ -28,7 +28,8 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Python requerido: 3.10 o superior.
+Python requerido: 3.10 o superior. PyTorch se instala como dependencia porque
+el pipeline importa los modelos deep/RL al arrancar.
 
 ## Tests
 
@@ -75,9 +76,9 @@ Con el CSV validado:
 python -m src --config config/pipeline_config.yaml --output outputs/result.json
 ```
 
-El proceso reserva el tramo OOS definido en la configuración y escribe el
-resultado solicitado. Un `NO-GO` devuelve código de salida distinto de cero;
-eso es intencional.
+El proceso reserva y evalúa el tramo OOS definido en la configuración antes de
+permitir un `GO`. Un `NO-GO` devuelve código de salida distinto de cero; eso es
+intencional.
 
 ## Estructura
 

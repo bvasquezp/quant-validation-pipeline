@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy.signal import fftconvolve
 from statsmodels.tsa.stattools import adfuller
 
 from src.logger import get_logger
@@ -31,7 +32,7 @@ class FoldFeatureSet:
     train_target: pd.Series
     test_features: pd.DataFrame
     test_target: pd.Series
-    d_used: float
+    d_used: Optional[float]
     ffd_lookback: int
     d_selection_method: str = "rule_based_adf"
 
@@ -88,11 +89,17 @@ def fractional_diff(
 
     # Convolucion con los pesos FFD
     values = series.values
+    # La convolucion FFT mantiene el mismo orden de pesos que la ventana
+    # original, pero evita el bucle Python O(T * lookback) en datasets reales.
     result = np.full(len(values), np.nan)
-
-    for i in range(width - 1, len(values)):
-        window = values[i - width + 1: i + 1]
-        result[i] = np.dot(weights, window)
+    if np.isnan(values).any():
+        result[width - 1:] = np.correlate(values, weights, mode="valid")
+    else:
+        result[width - 1:] = fftconvolve(
+            values,
+            weights[::-1],
+            mode="valid",
+        )
 
     output = pd.Series(
         result[width - 1:],
@@ -303,9 +310,33 @@ def build_fold_feature_sets(
         train_pos = fold.train_indices[fold.train_indices < len(sample_index)]
         test_pos = fold.test_indices[fold.test_indices < len(sample_index)]
         # Para el test de un fold, una regla PIT no puede mirar train posterior
-        # al inicio del test aunque CPCV lo permita para el ajuste del modelo.
+        # al inicio del test aunque el k-fold temporal lo permita para el ajuste.
         pre_test_train_pos = train_pos[train_pos < test_pos.min()]
-        selection_pos = pre_test_train_pos if len(pre_test_train_pos) >= 20 else train_pos
+
+        # El primer bloque no tiene historia anterior suficiente. No usar el
+        # train posterior: eso convertiría la selección de d en look-ahead.
+        if len(pre_test_train_pos) < 20:
+            log.warning(
+                "fold_not_evaluable_without_pre_test_history",
+                fold_id=fold.fold_id,
+                pre_test_train_size=len(pre_test_train_pos),
+                test_size=len(test_pos),
+            )
+            fold_sets.append(
+                FoldFeatureSet(
+                    fold_id=fold.fold_id,
+                    train_features=pd.DataFrame(),
+                    train_target=pd.Series(dtype=float),
+                    test_features=pd.DataFrame(),
+                    test_target=pd.Series(dtype=float),
+                    d_used=None,
+                    ffd_lookback=0,
+                    d_selection_method="not_evaluable_no_pre_test_history",
+                )
+            )
+            continue
+
+        selection_pos = pre_test_train_pos
         train_times = sample_index[selection_pos]
 
         if fixed_d is None:

@@ -1,7 +1,8 @@
 import numpy as np
+import torch
 
 from src.config import load_config
-from src.models.rl import FxTradingEnv, evaluate_policy, train_ppo
+from src.models.rl import CausalTCNActorCritic, FxTradingEnv, evaluate_policy, train_ppo
 
 
 def test_rl_environment_applies_costs_and_actions():
@@ -34,3 +35,11 @@ def test_ppo_trains_and_emits_only_discrete_actions():
 
     assert len(result["returns"]) == len(result["actions"])
     assert set(result["actions"].tolist()) <= {0, 1, 2}
+
+
+def test_rl_tcn_preserves_observation_length_causally():
+    model = CausalTCNActorCritic(n_features=5, hidden=8)
+    logits, value = model(torch.zeros((2, 16, 5)))
+
+    assert logits.shape == (2, 3)
+    assert value.shape == (2,)

@@ -44,7 +44,7 @@ def _ledger_context(
 ) -> Dict[str, Any]:
     metadata = metadata or {}
     d_values = metadata.get("d_used_by_fold", [])
-    unique_d = {float(d) for d in d_values}
+    unique_d = {float(d) for d in d_values if d is not None and np.isfinite(d)}
     return {
         "d_used": next(iter(unique_d)) if len(unique_d) == 1 else None,
         "d_selection_method": metadata.get("d_selection_method", "") if d_values else "",
@@ -175,7 +175,7 @@ def ridge_regression(
     fold_feature_sets: Optional[List[FoldFeatureSet]] = None,
     ledger_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Baseline 2: Ridge regression con CPCV.
+    """Baseline 2: Ridge regression con purged temporal k-fold.
 
     Usa las features como entrada y los retornos futuros como target.
     La prediccion se convierte en señal: long si prediccion > 0, short si < 0.
@@ -294,7 +294,7 @@ def lightgbm_classifier(
     fold_feature_sets: Optional[List[FoldFeatureSet]] = None,
     ledger_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Baseline 3: LightGBM con CPCV.
+    """Baseline 3: LightGBM con purged temporal k-fold.
 
     Clasifica la direccion del retorno (up/down) y genera señales.
     """

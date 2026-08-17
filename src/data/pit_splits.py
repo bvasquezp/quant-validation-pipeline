@@ -1,5 +1,5 @@
 """
-Agente 1 -- Purging, embargo y CPCV (Combinatorial Purged Cross-Validation).
+Agente 1 -- Purged/embargoed temporal k-fold validation.
 
 El purging y embargo son obligatorios: sin ellos, la informacion del
 futuro se filtra al conjunto de entrenamiento a traves de la
@@ -80,19 +80,20 @@ def purged_train_test_split(
     return train_indices, test_indices
 
 
-def combinatorial_purged_cv(
+def purged_kfold_cv(
     n_samples: int,
     n_folds: int = 5,
     purge_window: int = 10,
     embargo_window: int = 5,
 ) -> List[CVFold]:
-    """Genera folds de Combinatorial Purged Cross-Validation (CPCV).
+    """Genera folds temporales purged/embargoed.
 
     Divide los datos en n_folds segmentos contiguos. Para cada fold,
     un segmento es test y el resto es train (con purge/embargo aplicados
     en los bordes entre train y test).
 
-    Esto es equivalente a k-fold temporal con proteccion contra filtracion.
+    Esto no construye las combinaciones de un CPCV completo; es un k-fold
+    temporal con proteccion contra filtracion.
 
     Args:
         n_samples: Total de observaciones.
@@ -148,7 +149,7 @@ def combinatorial_purged_cv(
         folds.append(fold)
 
         log.info(
-            "cpcv_fold_created",
+            "purged_kfold_created",
             fold_id=fold_id,
             train_size=len(train_indices),
             test_size=len(test_indices),
@@ -157,6 +158,11 @@ def combinatorial_purged_cv(
         )
 
     return folds
+
+
+def combinatorial_purged_cv(*args, **kwargs) -> List[CVFold]:
+    """Compatibilidad: el nombre historico era incorrecto; usar purged_kfold_cv."""
+    return purged_kfold_cv(*args, **kwargs)
 
 
 def verify_no_overlap(folds: List[CVFold]) -> bool:

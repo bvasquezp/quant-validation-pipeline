@@ -5,7 +5,7 @@ Coordina el DAG completo del pipeline de validacion.
 Mantiene el Trial Ledger, aplica reintentos y genera el log de ejecucion.
 
 Flujo:
-  1. Data Agent      -> genera folds CPCV
+  1. Data Agent      -> genera folds temporales purged/embargoed
   2. Feature Agent   -> genera matriz de features
   3. Baseline Agent  -> Baseline 0, 1, 2, 3 -> cada uno logea trial
   4. Deep/RL Agents -> TCN supervisado, Attention supervisado, PPO real
@@ -34,8 +34,8 @@ from src.config import (
     set_global_seed,
 )
 from src.data.ingest import build_data_manifest, compute_returns, load_csv, save_data_manifest
-from src.data.pit_splits import combinatorial_purged_cv, verify_no_overlap
-from src.features.fractional_diff import build_fold_feature_sets
+from src.data.pit_splits import CVFold, purged_kfold_cv, verify_no_overlap
+from src.features.fractional_diff import build_fold_feature_sets, find_optimal_d
 from src.ledger.trial_ledger import (
     TrialRecord,
     count_trials,
@@ -74,6 +74,10 @@ class PipelineResult:
         self.gate_reasons: List[str] = []
         self.recommended_stage: str = ""
         self.execution_time_seconds: float = 0.0
+        self.final_oos_status: str = "not_evaluated"
+        self.final_oos_results: Dict[str, Dict[str, Any]] = {}
+        self.fold_diagnostics: Dict[str, Any] = {}
+        self.data_mode: str = "unknown"
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -81,6 +85,10 @@ class PipelineResult:
             "gate_reasons": self.gate_reasons,
             "recommended_stage": self.recommended_stage,
             "execution_time_seconds": self.execution_time_seconds,
+            "final_oos_status": self.final_oos_status,
+            "final_oos_results": self.final_oos_results,
+            "fold_diagnostics": self.fold_diagnostics,
+            "data_mode": self.data_mode,
             "dsr_results": {},
             "ablation_results": {},
         }
@@ -172,6 +180,8 @@ def run_pipeline(
         df = _generate_synthetic_data(config, mu=mu_override if mu_override is not None else 0.05)
 
     if not using_synthetic:
+        result.data_mode = "real"
+        full_df = df.copy()
         manifest = build_data_manifest(
             actual_data_path,
             df,
@@ -181,8 +191,12 @@ def run_pipeline(
             timezone=config.data.timezone,
         )
         save_data_manifest(manifest, config.data.manifest_path)
-        df, reserved_oos = _split_real_data(df, config)
+        df, oos_df, reserved_oos = _split_real_data(df, config)
         log.info("final_oos_reserved", **reserved_oos)
+    else:
+        result.data_mode = "synthetic"
+        full_df = df.copy()
+        oos_df = pd.DataFrame()
 
     prices = df["close"]
     returns = compute_returns(prices, method="log")
@@ -190,8 +204,8 @@ def run_pipeline(
     # Target: retorno futuro de una barra, definido antes de construir features.
     target = returns.shift(-1).dropna()
 
-    # Generar folds CPCV sobre el universo de targets.
-    folds = combinatorial_purged_cv(
+    # Generar folds temporales purged/embargoed sobre los targets.
+    folds = purged_kfold_cv(
         n_samples=len(target),
         n_folds=config.splits.n_folds,
         purge_window=config.splits.purge_window,
@@ -200,7 +214,7 @@ def run_pipeline(
 
     if not verify_no_overlap(folds):
         raise RuntimeError(
-            "CRITICAL: Overlap detected in CPCV folds. "
+            "CRITICAL: Overlap detected in purged folds. "
             "All results would be invalid."
         )
 
@@ -213,25 +227,35 @@ def run_pipeline(
     fold_feature_sets = _build_fold_features(df, target, folds, feat_cfg)
     d_values = [item.d_used for item in fold_feature_sets]
     lookbacks = [item.ffd_lookback for item in fold_feature_sets]
-    required_purge = max(lookbacks, default=config.splits.purge_window)
-    if required_purge > config.splits.purge_window and not using_synthetic:
-        folds = combinatorial_purged_cv(
-            n_samples=len(target),
-            n_folds=config.splits.n_folds,
-            purge_window=required_purge,
-            embargo_window=config.splits.embargo_window,
-        )
-        if not verify_no_overlap(folds):
-            raise RuntimeError("Dynamic FFD purge produced overlapping folds")
-        fold_feature_sets = _build_fold_features(df, target, folds, feat_cfg)
-        d_values = [item.d_used for item in fold_feature_sets]
-        lookbacks = [item.ffd_lookback for item in fold_feature_sets]
-        if max(lookbacks, default=0) > required_purge:
+    effective_purge = config.splits.purge_window
+    if not using_synthetic:
+        # La seleccion de d puede cambiar al purgar mas historia. Iterar hasta
+        # un punto fijo evita declarar inconsistencia por una sola pasada.
+        for _ in range(config.splits.n_folds + 2):
+            required_purge = max(lookbacks, default=effective_purge)
+            if required_purge <= effective_purge:
+                break
+            effective_purge = required_purge
+            folds = purged_kfold_cv(
+                n_samples=len(target),
+                n_folds=config.splits.n_folds,
+                purge_window=effective_purge,
+                embargo_window=config.splits.embargo_window,
+            )
+            if not verify_no_overlap(folds):
+                raise RuntimeError("Dynamic FFD purge produced overlapping folds")
+            fold_feature_sets = _build_fold_features(df, target, folds, feat_cfg)
+            d_values = [item.d_used for item in fold_feature_sets]
+            lookbacks = [item.ffd_lookback for item in fold_feature_sets]
+        else:
+            raise RuntimeError("FFD purge did not converge")
+        if max(lookbacks, default=0) > effective_purge:
             raise RuntimeError("FFD lookback exceeds the effective purge window")
         ledger_metadata.update(
             {
                 "d_used_by_fold": d_values,
                 "ffd_lookback_by_fold": lookbacks,
+                "effective_purge_window": effective_purge,
             }
         )
     ledger_metadata.update(
@@ -241,14 +265,32 @@ def run_pipeline(
             "d_selection_method": "rule_based_adf",
         }
     )
+    empty_fold_ids = [
+        item.fold_id
+        for item in fold_feature_sets
+        if item.train_features.empty or item.test_features.empty
+    ]
+    result.fold_diagnostics = {
+        "configured_folds": len(folds),
+        "evaluated_folds": len(folds) - len(empty_fold_ids),
+        "empty_fold_ids": empty_fold_ids,
+        "empty_fold_count": len(empty_fold_ids),
+    }
+    ledger_metadata["fold_diagnostics"] = result.fold_diagnostics
+    if empty_fold_ids:
+        log.warning(
+            "folds_not_evaluable_after_causal_ffd",
+            empty_fold_ids=empty_fold_ids,
+            configured_folds=len(folds),
+        )
     if lookbacks and max(lookbacks) > max(
-        config.splits.purge_window,
+        effective_purge,
         config.splits.embargo_window,
     ):
         log.info(
             "ffd_lookback_causality_verified_without_overlap",
             max_ffd_lookback=max(lookbacks),
-            purge_window=config.splits.purge_window,
+            purge_window=effective_purge,
             embargo_window=config.splits.embargo_window,
             train_policy="pre_test_only" if using_synthetic else "dynamic_purge",
         )
@@ -434,6 +476,24 @@ def run_pipeline(
 
     result.recommended_stage = final_recommended
 
+    # --- Validacion final OOS reservada ---
+    if not using_synthetic:
+        result.final_oos_results = _evaluate_final_oos(
+            full_df=full_df,
+            development_df=df,
+            oos_df=oos_df,
+            config=config,
+            annualization=annualization_factor,
+            ledger_metadata=ledger_metadata,
+            models_present=result.stage_results,
+        )
+        result.final_oos_status = "evaluated"
+    else:
+        # Los canarios sinteticos validan la calibracion nula/positiva; no son
+        # una reserva temporal independiente y nunca deben presentarse como OOS.
+        result.final_oos_status = "not_applicable_synthetic"
+        log.info("final_oos_not_applicable_to_synthetic_calibration")
+
     # --- Agente 5: Statistical Validation (DSR/PSR) ---
     log.info("stage_statistical_validation_start")
 
@@ -511,8 +571,17 @@ def _gate_decision(
     # modelo (``buy_hold``). Resolver ambas formas evita que el gate trate
     # un DSR válido como ausente.
     dsr_data = result.dsr_results.get(recommended, {})
+    model_key = recommended
     if not dsr_data and "(" in recommended and recommended.endswith(")"):
         model_name = recommended.rsplit("(", 1)[1][:-1]
+        model_key = next(
+            (
+                key
+                for key, stage_data in result.stage_results.items()
+                if stage_data.get("model_name") == model_name
+            ),
+            model_name,
+        )
         dsr_data = result.dsr_results.get(model_name, {})
         if not dsr_data:
             stage_key = next(
@@ -540,6 +609,48 @@ def _gate_decision(
     else:
         decision = "NO-GO"
         reasons.append(f"DSR not available for {recommended} [FAIL]")
+
+    if result.data_mode == "real":
+        final_oos = result.final_oos_results.get(model_key, {})
+        final_dsr = final_oos.get("dsr")
+        if result.final_oos_status != "evaluated" or not final_oos:
+            decision = "NO-GO"
+            reasons.append(f"Final OOS not available for {recommended} [FAIL]")
+        elif final_oos.get("n_observations", 0) < 3:
+            decision = "NO-GO"
+            reasons.append(f"Final OOS has insufficient observations [FAIL]")
+        elif (
+            not isinstance(final_dsr, (int, float, np.integer, np.floating))
+            or not np.isfinite(final_dsr)
+            or final_dsr < config.gate.min_dsr
+        ):
+            decision = "NO-GO"
+            final_dsr_text = (
+                f"{final_dsr:.4f}"
+                if isinstance(final_dsr, (int, float, np.integer, np.floating))
+                and np.isfinite(final_dsr)
+                else "N/A"
+            )
+            reasons.append(
+                f"Final OOS DSR of {recommended} = {final_dsr_text} "
+                f"< {config.gate.min_dsr} [FAIL]"
+            )
+        else:
+            reasons.append(
+                f"Final OOS DSR of {recommended} = {final_dsr:.4f} [PASS]"
+            )
+    elif result.data_mode == "synthetic":
+        reasons.append("Final OOS not applicable to synthetic calibration [INFO]")
+    else:
+        decision = "NO-GO"
+        reasons.append("Data mode not declared; OOS status is ambiguous [FAIL]")
+
+    empty_folds = result.fold_diagnostics.get("empty_fold_count", 0)
+    if empty_folds:
+        reasons.append(
+            f"FFD folds not evaluable={empty_folds}/"
+            f"{result.fold_diagnostics.get('configured_folds', 'N/A')} [WARN]"
+        )
 
     if config.gate.require_ablation_significance:
         for comp_name, comp_data in result.ablation_results.items():
@@ -574,8 +685,8 @@ def _gate_decision(
 def _split_real_data(
     df: pd.DataFrame,
     config: PipelineConfig,
-) -> tuple[pd.DataFrame, Dict[str, str]]:
-    """Reserva el periodo final OOS y devuelve solo el periodo de desarrollo."""
+) -> tuple[pd.DataFrame, pd.DataFrame, Dict[str, str]]:
+    """Separa desarrollo y OOS final sin permitir que OOS entre en el train."""
     start = pd.Timestamp(config.data.train_start, tz=config.data.timezone)
     train_end = pd.Timestamp(config.data.train_end, tz=config.data.timezone)
     test_start = pd.Timestamp(config.data.test_start, tz=config.data.timezone)
@@ -587,7 +698,7 @@ def _split_real_data(
     test = df.loc[test_start:test_end]
     if train.empty or test.empty:
         raise ValueError("Configured train/test windows are not covered by the dataset")
-    return train, {
+    return train, test, {
         "train_start": str(train.index.min()),
         "train_end": str(train.index.max()),
         "test_start": str(test.index.min()),
@@ -614,6 +725,200 @@ def _candidate_payload(result: Dict[str, Any]) -> Dict[str, Any]:
         "returns": result.get("returns_oos", np.array([])),
         "timestamps": result.get("oos_timestamps"),
     }
+
+
+def _evaluate_final_oos(
+    *,
+    full_df: pd.DataFrame,
+    development_df: pd.DataFrame,
+    oos_df: pd.DataFrame,
+    config: PipelineConfig,
+    annualization: float,
+    ledger_metadata: Dict[str, Any],
+    models_present: Dict[str, Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Evalua los modelos en el tramo final que nunca se usa para entrenar.
+
+    La seleccion de ``d`` usa solo ``development_df``. El fold sintetico
+    resultante entrena en desarrollo y prueba en OOS; no se escribe en el
+    ledger porque es una confirmacion final, no un trial adicional.
+    """
+    if oos_df.empty:
+        raise ValueError("Reserved OOS window is empty")
+
+    full_returns = compute_returns(full_df["close"], method="log")
+    target = full_returns.shift(-1).dropna()
+    start = pd.Timestamp(config.data.train_start, tz=config.data.timezone)
+    train_end = pd.Timestamp(config.data.train_end, tz=config.data.timezone)
+    test_start = pd.Timestamp(config.data.test_start, tz=config.data.timezone)
+    test_end = pd.Timestamp(config.data.test_end, tz=config.data.timezone)
+
+    # Excluir el ultimo punto de desarrollo: su target puede ser el primer
+    # retorno OOS. Excluir tambien el ultimo punto OOS: su target seria futuro.
+    train_pos = np.flatnonzero(
+        (target.index >= start)
+        & (target.index < train_end)
+        & (target.index < test_start)
+    )
+    test_pos = np.flatnonzero(
+        (target.index >= test_start) & (target.index < test_end)
+    )
+    if len(train_pos) < 20 or len(test_pos) < 3:
+        raise ValueError(
+            f"Insufficient final OOS data: train={len(train_pos)}, test={len(test_pos)}"
+        )
+
+    feat_cfg = config.features.fractional_diff
+    selection = find_optimal_d(
+        development_df["close"],
+        d_range=tuple(feat_cfg.d_range),
+        d_step=feat_cfg.d_step,
+        threshold_adf_pvalue=feat_cfg.threshold_adf_pvalue,
+        weight_cutoff=feat_cfg.weight_cutoff,
+    )
+    d_used = float(selection["optimal_d"])
+    final_fold = CVFold(
+        fold_id=-1,
+        train_indices=train_pos,
+        test_indices=test_pos,
+        purge_indices=np.array([], dtype=int),
+        embargo_indices=np.array([], dtype=int),
+    )
+    final_set = build_fold_feature_sets(
+        full_df,
+        target,
+        [final_fold],
+        fixed_d=d_used,
+        price_col="close",
+        d_range=tuple(feat_cfg.d_range),
+        d_step=feat_cfg.d_step,
+        threshold_adf_pvalue=feat_cfg.threshold_adf_pvalue,
+        weight_cutoff=feat_cfg.weight_cutoff,
+    )[0]
+    if final_set.train_features.empty or final_set.test_features.empty:
+        raise ValueError("Final OOS feature set is empty after causal FFD")
+
+    target_oos = final_set.test_target
+    timestamps = final_set.test_features.index.to_numpy()
+    results: Dict[str, Dict[str, Any]] = {}
+
+    def record(model_key: str, model_name: str, values: np.ndarray) -> None:
+        values = np.asarray(values, dtype=float)
+        sr = _sharpe_from_returns(values, annualization)
+        dsr = deflated_sharpe_ratio(
+            sr_hat=sr,
+            returns=values,
+            n_trials=1,
+            avg_pairwise_corr=0.0,
+            max_lag_autocorr=config.stats.psr_dsr.max_lag_autocorr,
+            annualization_factor=annualization,
+        ) if len(values) >= 3 else {"dsr": 0.0}
+        results[model_key] = {
+            "model_name": model_name,
+            "sharpe_oos": float(sr),
+            "dsr": float(dsr.get("dsr", 0.0)),
+            "n_observations": int(len(values)),
+            "d_used": d_used,
+            "timestamps_start": str(timestamps[0]),
+            "timestamps_end": str(timestamps[-1]),
+        }
+
+    record("buy_hold", "buy_and_hold", target_oos.to_numpy())
+
+    prices = full_df["close"]
+    sma_short = config.models.baselines.sma_short
+    sma_long = config.models.baselines.sma_long
+    signal = np.where(
+        prices.rolling(sma_short).mean() > prices.rolling(sma_long).mean(),
+        1.0,
+        -1.0,
+    )
+    signal = pd.Series(signal, index=prices.index).reindex(timestamps)
+    record("sma_crossover", "sma_crossover", signal.to_numpy() * target_oos.to_numpy())
+
+    empty_features = pd.DataFrame()
+    empty_target = pd.Series(dtype=float)
+    final_sets = [final_set]
+    ridge_final = ridge_regression(
+        empty_features,
+        empty_target,
+        [final_fold],
+        alpha=config.models.baselines.ridge_alpha,
+        ledger_path=None,
+        annualization=annualization,
+        fold_feature_sets=final_sets,
+        ledger_metadata=ledger_metadata,
+    )
+    record("ridge", "ridge_regression", ridge_final["returns_oos"])
+
+    lgbm_final = lightgbm_classifier(
+        empty_features,
+        empty_target,
+        [final_fold],
+        lgbm_params=config.models.baselines.lgbm_params.model_dump(),
+        ledger_path=None,
+        annualization=annualization,
+        fold_feature_sets=final_sets,
+        ledger_metadata=ledger_metadata,
+    )
+    record("lightgbm", "lightgbm", lgbm_final["returns_oos"])
+
+    if "tcn_supervised" in models_present:
+        tcn_final = tcn_supervised(
+            empty_features,
+            empty_target,
+            [final_fold],
+            tcn_params=config.models.deep.tcn.model_dump(),
+            ledger_path=None,
+            annualization=annualization,
+            fold_feature_sets=final_sets,
+            ledger_metadata=ledger_metadata,
+        )
+        record("tcn_supervised", "tcn_supervised", tcn_final["returns_oos"])
+    if "tcn_attention_supervised" in models_present:
+        attention_final = tcn_attention_supervised(
+            empty_features,
+            empty_target,
+            [final_fold],
+            tcn_params=config.models.deep.tcn.model_dump(),
+            attention_params=config.models.deep.attention.model_dump(),
+            ledger_path=None,
+            annualization=annualization,
+            fold_feature_sets=final_sets,
+            ledger_metadata=ledger_metadata,
+        )
+        record(
+            "tcn_attention_supervised",
+            "tcn_attention_supervised",
+            attention_final["returns_oos"],
+        )
+    if "ppo_trading" in models_present:
+        ppo_final = ppo_trading(
+            final_sets,
+            config.models.rl,
+            seed=config.reproducibility.global_seed,
+            ledger_path=None,
+            ledger_metadata=ledger_metadata,
+            annualization=annualization,
+        )
+        record("ppo_trading", "ppo_trading", ppo_final["returns_oos"])
+
+    log.info(
+        "final_oos_evaluated",
+        train_observations=len(final_set.train_features),
+        test_observations=len(final_set.test_features),
+        d_used=d_used,
+        models=list(results),
+    )
+    return results
+
+
+def _sharpe_from_returns(values: np.ndarray, annualization: float) -> float:
+    values = np.asarray(values, dtype=float)
+    if len(values) < 2:
+        return 0.0
+    std = values.std(ddof=1)
+    return float(values.mean() / std * np.sqrt(annualization)) if std > 1e-15 else 0.0
 
 
 def _generate_synthetic_data(

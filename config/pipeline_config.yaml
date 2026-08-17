@@ -47,7 +47,7 @@ data:
     - "2024-01-01"
 
 splits:
-  n_folds: 5                       # folds CPCV
+  n_folds: 5                       # folds temporales purged/embargoed
   purge_window: 10                 # barras de purging
   embargo_window: 5                # barras de embargo
 
