@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "experiment_id": "quantbot-60d-first-passage",
+  "mode": "research_only",
+  "objective": {
+    "currency": "CLP",
+    "initial_cash": 30000,
+    "target_liquid_cash": 100000,
+    "loss_exit_liquidation_value": 24000,
+    "window_days": 60,
+    "calendar": "UTC",
+    "stop_after_first_exit": true,
+    "target_checked_after_liquidation": true,
+    "loss_check": "each_observed_daily_mark_exit_at_next_executable_quote",
+    "force_liquidation_at_window_end": true
+  },
+  "deployment": {
+    "allowed_mode": "simulation",
+    "allow_live_orders": false
+  },
+  "market": {
+    "primary_research": "Kraken BTC/USD spot",
+    "data_interval_minutes": 15,
+    "feature_intervals_minutes": [
+      30,
+      240
+    ],
+    "decision_frequency_days": 1,
+    "execution": "first_observable_quote_at_or_after_00:15_UTC",
+    "market_data": "XBTUSD_15.csv",
+    "historical_execution_proxy": "00:15 UTC bar open plus adverse friction",
+    "fx_policy": "Use timestamped executable CLP/USD conversion for realized CLP results; constant FX is a labeled sensitivity only",
+    "candidate_markets": [
+      "BTC/CLP",
+      "liquid unlevered ETF"
+    ],
+    "candidate_gate": "Verify source, historical coverage, trading calendar, executable FX and all-in costs before inclusion"
+  },
+  "portfolio": {
+    "long_flat": true,
+    "allow_leverage": false,
+    "max_open_positions": 1,
+    "max_position_fraction": 1,
+    "missing_execution_quote": "Do not fill; defer to first valid quote without changing cost or stopping rules",
+    "capital_carries_between_windows": false
+  },
+  "hypotheses": {
+    "trend": {
+      "lookback_days": 7,
+      "entry_rule": "7-day log return greater than zero"
+    },
+    "reversal": {
+      "lookback_days": 21,
+      "entry_rule": "most recent daily log return <= negative two times the standard deviation of the prior 21 daily returns"
+    },
+    "ridge": {
+      "role": "Filter entries from each simple rule",
+      "target": "log return from executable entry proxy to executable exit proxy",
+      "standardization": "Fit on training data exclusively",
+      "alpha_candidates": [
+        0.1,
+        1,
+        10
+      ],
+      "entry_rule": "Predicted log return exceeds round-trip trading cost in log-return units",
+      "feature_sets": {
+        "momentum_days": [
+          1,
+          3,
+          7
+        ],
+        "realized_volatility_days": [
+          3,
+          7,
+          21
+        ]
+      },
+      "holding_days": [
+        3,
+        7
+      ],
+      "exit_rule": "Exit at holding horizon or portfolio barrier, whichever triggers first"
+    }
+  },
+  "costs": {
+    "kraken_fee_bps_per_side_assumption": 80,
+    "adverse_execution_bps_per_side_assumption": 10,
+    "stress_cost_multipliers": [
+      1,
+      2
+    ],
+    "verify_before_paper": [
+      "market fee tier",
+      "spread and slippage",
+      "minimum quantity and notional",
+      "rounding",
+      "conversion and funding costs"
+    ]
+  },
+  "validation": {
+    "development_end_exclusive": "2026-04-01T00:00:00Z",
+    "final_holdout_end_exclusive": "2026-10-01T00:00:00Z",
+    "final_holdout_access": "Only after one strategy and its parameters are frozen",
+    "minimum_training_days": 730,
+    "development_fold_days": 180,
+    "outer_method": "expanding chronological walk-forward",
+    "parameter_selection": "inner chronological folds; compare net performance against same-horizon simple parents",
+    "purge_rule": "Exclude labels whose executable exit meets or crosses validation or test start",
+    "primary_window_stride_days": 60,
+    "primary_window_origin": "First eligible day of evaluation period",
+    "incomplete_window_policy": "Exclude incomplete windows; report coverage and count",
+    "minimum_development_round_trips_for_monte_carlo": 30,
+    "minimum_development_folds_with_trades": 3,
+    "eligibility_note": "Exploratory minimums; confidence intervals and effective sample size still govern interpretation",
+    "baselines": [
+      "CLP cash",
+      "continuous buy and hold",
+      "unfiltered trend",
+      "unfiltered reversal"
+    ],
+    "sensitivity": [
+      "remove best round trip",
+      "double trading costs",
+      "alternate 60-day window origins as secondary analysis"
+    ]
+  },
+  "monte_carlo": {
+    "method": "paired stationary bootstrap within contiguous out-of-sample spans",
+    "input": "daily net portfolio returns including cash days, after simulated costs",
+    "paths": 10000,
+    "seed": 602026,
+    "mean_block_lengths_days": [
+      7,
+      14,
+      21
+    ],
+    "base_mean_block_days": 14,
+    "report": [
+      "target first",
+      "loss exit first",
+      "neither by day 60",
+      "median final CLP",
+      "5th percentile final CLP",
+      "drawdown",
+      "observed historical window counts"
+    ],
+    "limitation": "Daily-return resampling estimates a model-conditional first-passage proxy; obey an explicit daily observation rule, and use event replay for next-fill slippage and gaps."
+  }
+}
